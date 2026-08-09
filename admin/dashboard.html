@@ -266,6 +266,93 @@
     .topbar{padding:18px 16px 0;}
     .content{padding:18px 16px 40px;}
   }
+
+/* ================================================================
+   E-commerce Admin Dashboard refresh
+   Adapted from the uploaded ecommerce-admin-dashboard UI:
+   cleaner SaaS surfaces, tighter typography, stronger hierarchy.
+   All existing IDs/JS contracts are intentionally preserved.
+   ================================================================ */
+:root{
+  --ink:#20242b;
+  --ink-soft:#4b5563;
+  --muted:#6b7280;
+  --faint:#9ca3af;
+  --bg:#f7f8fa;
+  --surface:#ffffff;
+  --border:#e5e7eb;
+  --border-soft:#eef0f2;
+  --teal:#20242b;
+  --teal-deep:#111827;
+  --paid-bg:#ecfdf3; --paid-fg:#16704a;
+  --pending-bg:#fff7df; --pending-fg:#8a5b00;
+  --expired-bg:#f3f4f6; --expired-fg:#6b7280;
+  --shipped-bg:#eef4ff; --shipped-fg:#315dbb;
+  --cancelled-bg:#fff0f0; --cancelled-fg:#b42318;
+  --radius-lg:10px; --radius-md:8px; --radius-sm:6px;
+  --shadow:0 1px 2px rgba(16,24,40,.03),0 4px 16px rgba(16,24,40,.04);
+}
+body{font-family:"Public Sans","Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);}
+.app{background:var(--bg);}
+.sidebar{width:236px;flex-basis:236px;background:#fff;border-right:1px solid var(--border);}
+.sidebar-head{padding:18px 16px 15px;}
+.brand-mark{width:32px;height:32px;flex-basis:32px;border-radius:8px;font-size:13px;}
+.brand-name{font-size:14px;letter-spacing:-.01em;}
+.brand-sub{font-size:11px;}
+.nav{padding:8px 10px;}
+.nav-section{margin-bottom:16px;}
+.nav-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:7px 9px;color:#a1a8b0;}
+.nav-item{padding:8px 9px;border-radius:7px;font-size:13px;gap:9px;color:#5f6873;}
+.nav-item:hover{background:#f4f5f7;color:#20242b;}
+.nav-item.active{background:#f0f1f3;color:#20242b;font-weight:650;}
+.nav-item svg{width:17px;height:17px;flex-basis:17px;}
+.nav-badge{font-size:10px;padding:1px 6px;background:#20242b;}
+.sidebar-foot{padding:12px 16px 16px;}
+.foot-link{font-size:11.5px;}
+.topbar{padding:20px 26px 0;}
+.topbar-title h1{font-size:21px;letter-spacing:-.02em;}
+.topbar-title p{font-size:12.5px;color:#7b8490;}
+.topbar-actions{gap:7px;}
+.chip{border-radius:7px;padding:7px 10px;font-size:11px;background:#fff;color:#59636e;}
+.icon-btn{width:36px;height:36px;border-radius:8px;background:#fff;}
+.icon-btn.wide{font-size:12px;padding:0 12px;}
+.content{padding:20px 26px 44px;max-width:1500px;}
+.kpi-row{gap:12px;margin:18px 0;}
+.kpi-card{border-radius:10px;padding:16px 17px;box-shadow:var(--shadow);}
+.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.055em;color:#8a929c;margin-bottom:7px;}
+.kpi-value{font-size:23px;letter-spacing:-.02em;}
+.chart-row{gap:12px;margin-bottom:12px;}
+.card{border-radius:10px;box-shadow:var(--shadow);}
+.chart-card{padding:16px 16px 9px;}
+.card-label{font-size:10px;letter-spacing:.075em;color:#8a929c;margin-bottom:8px;}
+.chart-wrap{height:205px;}
+.bottom-row{gap:12px;}
+.card-head{padding:16px 17px 3px;}
+.card-head h3{font-size:14px;}
+.count-pill{font-size:10px;padding:1px 7px;}
+.link-btn{font-size:12px;}
+table{min-width:520px;}
+th{font-size:10px;letter-spacing:.06em;padding:8px 11px;color:#9098a1;}
+td{padding:11px;font-size:12.5px;}
+.pill{padding:3px 9px;font-size:11px;}
+.fulfillment-head-row{padding:4px 17px 7px;font-size:10px;}
+.fulfillment-row{padding:9px 17px;font-size:12px;}
+.btn{background:#20242b;border-radius:7px;padding:8px 14px;font-size:12.5px;}
+.btn:hover{background:#111827;}
+.btn-outline{background:#fff;color:#4b5563;}
+.toolbar{margin:18px 0 14px;gap:8px;}
+.toolbar input[type="search"],.toolbar input[type="text"],.toolbar select{padding:8px 11px;border-radius:7px;font-size:12.5px;}
+.panel{padding:17px;margin-top:18px;}
+.panel h3{font-size:14px;}
+.panel p.hint{font-size:12.5px;}
+.field{padding:8px 11px;border-radius:7px;font-size:12.5px;}
+.product-card{border-radius:10px;padding:18px;}
+.note-card{padding:14px 17px;}
+.login-card{border-radius:10px;box-shadow:var(--shadow);padding:28px 24px;}
+.login-card h2{font-size:18px;}
+@media (max-width:1150px){.content{padding-left:20px;padding-right:20px;}}
+@media (max-width:840px){.topbar{padding-left:16px;padding-right:16px}.content{padding-left:16px;padding-right:16px}.sidebar{width:236px;flex-basis:236px;}}
+
 </style>
 </head>
 <body>
@@ -373,7 +460,7 @@
         </button>
         <div>
           <h1 id="viewTitle">Dashboard Overview</h1>
-          <p id="viewSubtitle">A summary of orders, sales, and fulfillment for 91DAB.</p>
+          <p id="viewSubtitle">A clean overview of orders, sales, customers, and fulfillment.</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -718,7 +805,7 @@
 
   // ---------------- view switching ----------------
   var VIEW_META = {
-    dashboard: { title:'Dashboard Overview', subtitle:'A summary of orders, sales, and fulfillment for 91DAB.' },
+    dashboard: { title:'Dashboard Overview', subtitle:'A clean overview of orders, sales, customers, and fulfillment.' },
     orders:    { title:'Orders', subtitle:'Every order placed through the storefront.' },
     returns:   { title:'Returns', subtitle:'Return requests and refunds on paid orders.' },
     shipping:  { title:'Shipping', subtitle:'Paid orders that still need to ship, with carrier and tracking info.' },
