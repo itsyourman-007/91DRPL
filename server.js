@@ -29,6 +29,24 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PRICE_PER_PACK = 500;
 const MERCHANT_VPA = process.env.MERCHANT_VPA;
+
+// =================================================================
+// SSE event bus — fires `new-order` whenever someone reaches the
+// payment page (POST /api/orders creates the order here). Admin tabs
+// subscribe via GET /api/admin/events, so the bell rings instantly
+// without relying on polling alone.
+// =================================================================
+const sseClients = new Set();
+function sseBroadcast(data) {
+  // Emit a named `new-order` event: the dashboard listens for
+  // addEventListener('new-order', …). Without this `event:` line the
+  // browser would deliver only the generic 'message' event and the
+  // named handler would never fire.
+  const payload = 'event: new-order\ndata: ' + JSON.stringify(data) + '\n\n';
+  for (const res of sseClients) {
+    try { res.write(payload); } catch (e) { sseClients.delete(res); }
+  }
+}
 const MERCHANT_NAME = process.env.MERCHANT_NAME || '91DAB';
 
 // =================================================================
@@ -55,6 +73,7 @@ app.post('/api/orders', async (req, res) => {
 
     const amount = qty * PRICE_PER_PACK;
     const order = await createOrder({ qty, amount, orderInfo });
+    sseBroadcast({ type: 'new-order', orderId: order.id, amount, buyer: orderInfo.name, email: orderInfo.email, createdAt: Date.now() });
 
     const upiLink = buildUpiLink({
       vpa: MERCHANT_VPA,
@@ -213,6 +232,19 @@ app.get('/admin', (req, res) => {
 // logged in?" without pulling real data.
 app.get('/api/admin/session', requireAdmin, (req, res) => {
   res.json({ ok: true });
+});
+
+// GET /api/admin/events — SSE stream for live notifications. The
+// dashboard subscribes on boot; whenever a buyer reaches the payment
+// page (POST /api/orders creates the order), `new-order` events are
+// pushed here so the bell rings instantly without waiting on polling.
+app.get('/api/admin/events', requireAdmin, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.write(': connected\n\n');
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
 });
 
 // POST /admin/login — { user, password } → sets the session cookie.
