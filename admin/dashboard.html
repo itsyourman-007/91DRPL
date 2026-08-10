@@ -1374,7 +1374,11 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
       var res = await fetch('/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ user: user, password: pass }) });
       var data = {};
       try { data = await res.json(); } catch (e2) {}
-      if (!res.ok) throw new Error(data.error || 'Invalid username or password');
+      if (!res.ok) {
+        if (res.status === 500) throw new Error('Admin login is not configured on the server. Set ADMIN_USER and ADMIN_PASSWORD in the hosting environment variables and restart the server.');
+        if (res.status === 400) throw new Error('Please enter both a username and a password.');
+        throw new Error(data.error || 'Invalid username or password');
+      }
       document.getElementById('loginPassword').value = '';
       showApp(); loadDashboard(); startPolling();
     } catch (e3) { err.textContent = e3.message; err.hidden = false; }
