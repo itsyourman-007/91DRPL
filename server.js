@@ -288,16 +288,29 @@ app.get('/api/admin/orders/export.csv', requireAdmin, async (req, res) => {
       'Return Status', 'Refunded Amount', 'Created At', 'Paid At',
     ];
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    // Excel (and Sheets) auto-detect any all-digit CSV cell as a number,
+    // then re-render long ones in scientific notation — silently
+    // truncating UTRs, phone numbers, pincodes, and tracking numbers,
+    // which are identifiers, not quantities. Wrapping them as ="..."
+    // is the standard trick to force Excel to keep them as literal text.
+    const escapeAsText = (v) => {
+      const str = String(v ?? '');
+      if (!str) return '""';
+      return `"=""${str.replace(/"/g, '""')}"""`;
+    };
     const lines = [header.join(',')];
     for (const o of orders) {
       lines.push([
-        o.id, o.orderInfo.name, o.orderInfo.email, o.orderInfo.phone, o.orderInfo.address,
-        o.orderInfo.city, o.orderInfo.state, o.orderInfo.pincode, o.qty, o.amount,
-        o.status, o.fulfillmentStatus, o.utr, o.carrier, o.trackingNumber,
-        o.returnStatus, o.refundedAmount,
-        new Date(o.createdAt).toISOString(),
-        o.paidAt ? new Date(o.paidAt).toISOString() : '',
-      ].map(escape).join(','));
+        escape(o.id), escape(o.orderInfo.name), escape(o.orderInfo.email),
+        escapeAsText(o.orderInfo.phone), escape(o.orderInfo.address),
+        escape(o.orderInfo.city), escape(o.orderInfo.state), escapeAsText(o.orderInfo.pincode),
+        escape(o.qty), escape(o.amount),
+        escape(o.status), escape(o.fulfillmentStatus), escapeAsText(o.utr),
+        escape(o.carrier), escapeAsText(o.trackingNumber),
+        escape(o.returnStatus), escape(o.refundedAmount),
+        escape(new Date(o.createdAt).toISOString()),
+        escape(o.paidAt ? new Date(o.paidAt).toISOString() : ''),
+      ].join(','));
     }
     res.set('Content-Type', 'text/csv');
     res.set('Content-Disposition', `attachment; filename="91dab-orders-${Date.now()}.csv"`);
