@@ -253,11 +253,26 @@ app.post('/admin/login', (req, res) => {
     return res.status(500).json({ error: 'Admin login is not configured on the server yet.' });
   }
   const { user, password } = req.body || {};
+  if (!user || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
   if (safeEqual(user, process.env.ADMIN_USER) && safeEqual(password, process.env.ADMIN_PASSWORD)) {
     setSessionCookie(req, res, createSessionToken());
     return res.json({ ok: true });
   }
   return res.status(401).json({ error: 'Invalid username or password' });
+});
+
+// GET /api/admin/config-check — unauthenticated probe so the dashboard
+// (or you) can tell whether the admin credentials are actually set on
+// the server. It reports only whether each value exists, never the values.
+app.get('/api/admin/config-check', (req, res) => {
+  res.json({
+    adminUserConfigured: Boolean(process.env.ADMIN_USER),
+    adminPasswordConfigured: Boolean(process.env.ADMIN_PASSWORD),
+    upiConfigured: Boolean(process.env.MERCHANT_VPA),
+    serverTime: new Date().toISOString(),
+  });
 });
 
 // POST /admin/logout — clears the session cookie.
