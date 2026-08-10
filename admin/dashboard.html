@@ -450,18 +450,18 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
       <!-- ================= DASHBOARD ================= -->
       <section class="view" id="view-dashboard">
         <div class="kpi-row">
-          <div class="kpi-card">
+          <button class="kpi-card kpi-link" type="button" data-go-view="finances" title="Open Finances">
             <div class="kpi-label">Total Revenue</div>
             <div class="kpi-value" id="kpiRevenue">—</div>
             <div class="kpi-trend" id="kpiRevenueTrend"></div>
             <div class="kpi-spark chart-wrap" style="height:30px;"><canvas id="sparkRevenue"></canvas></div>
-          </div>
-          <div class="kpi-card">
+          </button>
+          <button class="kpi-card kpi-link" type="button" data-go-view="orders" title="Open Orders">
             <div class="kpi-label">Total Orders</div>
             <div class="kpi-value" id="kpiOrders">—</div>
             <div class="kpi-trend" id="kpiOrdersTrend"></div>
             <div class="kpi-spark chart-wrap" style="height:30px;"><canvas id="sparkOrders"></canvas></div>
-          </div>
+          </button>
           <div class="kpi-card">
             <div class="kpi-label">Avg. Order Value</div>
             <div class="kpi-value" id="kpiAvg">—</div>
@@ -804,21 +804,31 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   async function switchView(view){
     state.view = view;
     document.querySelectorAll('.view').forEach(function(v){ v.hidden = true; });
-    document.getElementById('view-' + view).hidden = false;
+    var target = document.getElementById('view-' + view);
+    if (!target) return;
+    target.hidden = false;
     document.querySelectorAll('.nav-item').forEach(function(b){ b.classList.toggle('active', b.dataset.view === view); });
     var meta = VIEW_META[view];
     document.getElementById('viewTitle').textContent = meta[0];
     document.getElementById('viewSubtitle').textContent = meta[1];
     closeMobileSidebar();
+    // Every navigation action starts at the top of the selected view.
+    var content = document.getElementById('content');
+    if (content) content.scrollTo({ top: 0, behavior: 'auto' });
+    window.scrollTo(0, 0);
     if (view === 'dashboard') await loadDashboard();
     if (view === 'orders') await loadOrders();
     if (view === 'returns') await loadReturns();
     if (view === 'product') await loadProduct();
     if (view === 'customers') await loadCustomers();
     if (view === 'messages') await loadMessages();
-    if (view === 'reports') await loadReports();
-    if (view === 'finances') await loadFinances();
+    if (view === 'reports') await loadReports(true);
+    if (view === 'finances') await loadFinances(true);
+    if (content) content.scrollTo({ top: 0, behavior: 'auto' });
   }
+  document.querySelectorAll('[data-go-view]').forEach(function(btn){
+    btn.addEventListener('click', function(){ switchView(btn.dataset.goView); });
+  });
   document.querySelectorAll('.nav-item').forEach(function(btn){
     btn.addEventListener('click', function(){ switchView(btn.dataset.view); });
   });
@@ -1197,41 +1207,76 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   // ---------------- reports ----------------
   async function loadReports(force){
     try {
-      if (force || !state.reports) state.reports = await api('/api/admin/reports');
+      if (force || !state.reports) {
+        try {
+          state.reports = await api('/api/admin/reports');
+        } catch (apiErr) {
+          // Fallback keeps the Reports page usable even if the endpoint is temporarily unavailable.
+          var orders = state.orders || await api('/api/admin/orders').then(function(d){ return d.orders; });
+          var customers = state.customers || await api('/api/admin/customers').then(function(d){ return d.customers; });
+          var paid = orders.filter(function(o){ return o.status === 'paid'; });
+          var returned = orders.filter(function(o){ return o.returnStatus && o.returnStatus !== 'none'; });
+          var total = orders.length || 1;
+          state.reports = {
+            confirmationRate: Math.round((paid.length / total) * 100),
+            avgOrderValue: paid.length ? Math.round(paid.reduce(function(a,o){ return a + Number(o.amount || 0); }, 0) / paid.length) : 0,
+            repeatCustomers: customers.filter(function(c){ return c.orders > 1; }).length,
+            returnRate: paid.length ? Math.round((returned.length / paid.length) * 100) : 0,
+            topCustomers: customers.slice().sort(function(a,b){ return b.totalSpent - a.totalSpent; }).slice(0,8),
+            statusBreakdown: ['paid','pending','expired'].map(function(status){ var count = orders.filter(function(o){ return o.status === status; }).length; return {status:status,count:count,percent:Math.round((count/total)*100)}; })
+          };
+        }
+      }
       renderReports(state.reports);
     } catch (e) { showToast(e.message); }
   }
   function renderReports(r){
-    document.getElementById('repConfirmRate').textContent = r.confirmationRate + '%';
+    r = r || {};
+    document.getElementById('repConfirmRate').textContent = (r.confirmationRate ?? 0) + '%';
     document.getElementById('repAvgOrder').textContent = fmtMoney(r.avgOrderValue);
-    document.getElementById('repRepeat').textContent = r.repeatCustomers;
-    document.getElementById('repReturnRate').textContent = r.returnRate + '%';
-    var tbody = document.getElementById('topCustomersBody');
-    tbody.innerHTML = r.topCustomers.length ? r.topCustomers.map(function(c){
-      return '<tr><td>' + escapeHtml(c.name) + '</td><td>' + c.orders + '</td><td class="amount-col">' + fmtMoney(c.totalSpent) + '</td></tr>';
+    document.getElementById('repRepeat').textContent = Number(r.repeatCustomers || 0).toLocaleString('en-IN');
+    document.getElementById('repReturnRate').textContent = (r.returnRate ?? 0) + '%';
+    var top = Array.isArray(r.topCustomers) ? r.topCustomers : [];
+    document.getElementById('topCustomersBody').innerHTML = top.length ? top.map(function(c){
+      return '<tr><td>' + escapeHtml(c.name || '—') + '</td><td>' + (c.orders || 0) + '</td><td class="amount-col">' + fmtMoney(c.totalSpent) + '</td></tr>';
     }).join('') : emptyRow(3, 'No customers yet');
     var COLORS = { paid:'var(--paid-fg)', pending:'var(--pending-fg)', expired:'var(--expired-fg)' };
     var LABELS = { paid:'Paid', pending:'Awaiting payment', expired:'Expired' };
-    document.getElementById('statusBreakdown').innerHTML = r.statusBreakdown.map(function(s){
-      return '<div class="stat-row"><div class="stat-row-head"><span>' + LABELS[s.status] + '</span><span style="color:var(--muted);">' + s.count + ' · ' + s.percent + '%</span></div><div class="stat-track"><div class="stat-fill" style="width:' + s.percent + '%;background:' + COLORS[s.status] + ';"></div></div></div>';
-    }).join('');
+    var breakdown = Array.isArray(r.statusBreakdown) ? r.statusBreakdown : [];
+    document.getElementById('statusBreakdown').innerHTML = breakdown.length ? breakdown.map(function(s){
+      return '<div class="stat-row"><div class="stat-row-head"><span>' + (LABELS[s.status] || s.status) + '</span><span style="color:var(--muted);">' + (s.count || 0) + ' · ' + (s.percent || 0) + '%</span></div><div class="stat-track"><div class="stat-fill" style="width:' + (s.percent || 0) + '%;background:' + (COLORS[s.status] || 'var(--accent)') + ';"></div></div></div>';
+    }).join('') : '<div class="empty-state">No order data yet.</div>';
   }
 
   // ---------------- finances ----------------
   async function loadFinances(force){
     try {
-      if (force || !state.finances) state.finances = await api('/api/admin/finances');
+      if (force || !state.finances) {
+        try {
+          state.finances = await api('/api/admin/finances');
+        } catch (apiErr) {
+          var orders = state.orders || await api('/api/admin/orders').then(function(d){ return d.orders; });
+          var paid = orders.filter(function(o){ return o.status === 'paid'; });
+          var gross = paid.reduce(function(a,o){ return a + Number(o.amount || 0); }, 0);
+          var refunded = orders.filter(function(o){ return o.returnStatus === 'refunded'; }).reduce(function(a,o){ return a + Number(o.refundedAmount || 0); }, 0);
+          var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          var monthly = months.map(function(label,i){ return {label:label,revenue:Math.round(paid.filter(function(o){ var d=new Date(o.paidAt || o.createdAt); return d.getFullYear()===new Date().getFullYear() && d.getMonth()===i; }).reduce(function(a,o){return a+Number(o.amount||0);},0))}; });
+          state.finances = { grossRevenue:Math.round(gross), refunded:Math.round(refunded), netRevenue:Math.round(gross-refunded), ordersPaid:paid.length, monthly:monthly };
+        }
+      }
       renderFinances(state.finances);
     } catch (e) { showToast(e.message); }
   }
   function renderFinances(f){
+    f = f || {};
     document.getElementById('finGross').textContent = fmtMoney(f.grossRevenue);
     document.getElementById('finRefunded').textContent = fmtMoney(f.refunded);
     document.getElementById('finNet').textContent = fmtMoney(f.netRevenue);
-    document.getElementById('finOrdersPaid').textContent = f.ordersPaid.toLocaleString('en-IN');
-    document.getElementById('financeMonthlyBody').innerHTML = f.monthly.map(function(m){
-      return '<tr><td>' + m.label + '</td><td class="amount-col">' + fmtMoney(m.revenue) + '</td></tr>';
-    }).join('');
+    document.getElementById('finOrdersPaid').textContent = Number(f.ordersPaid || 0).toLocaleString('en-IN');
+    var monthly = Array.isArray(f.monthly) ? f.monthly : [];
+    document.getElementById('financeMonthlyBody').innerHTML = monthly.length ? monthly.map(function(m){
+      return '<tr><td>' + escapeHtml(m.label || '—') + '</td><td class="amount-col">' + fmtMoney(m.revenue) + '</td></tr>';
+    }).join('') : emptyRow(2, 'No revenue data yet');
   }
 
   // ---------------- notifications (payment-page alerts) ----------------
