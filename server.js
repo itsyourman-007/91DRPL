@@ -29,24 +29,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PRICE_PER_PACK = 500;
 const MERCHANT_VPA = process.env.MERCHANT_VPA;
-
-// =================================================================
-// SSE event bus — fires `new-order` whenever someone reaches the
-// payment page (POST /api/orders creates the order here). Admin tabs
-// subscribe via GET /api/admin/events, so the bell rings instantly
-// without relying on polling alone.
-// =================================================================
-const sseClients = new Set();
-function sseBroadcast(data) {
-  // Emit a named `new-order` event: the dashboard listens for
-  // addEventListener('new-order', …). Without this `event:` line the
-  // browser would deliver only the generic 'message' event and the
-  // named handler would never fire.
-  const payload = 'event: new-order\ndata: ' + JSON.stringify(data) + '\n\n';
-  for (const res of sseClients) {
-    try { res.write(payload); } catch (e) { sseClients.delete(res); }
-  }
-}
 const MERCHANT_NAME = process.env.MERCHANT_NAME || '91DAB';
 
 // =================================================================
@@ -73,7 +55,6 @@ app.post('/api/orders', async (req, res) => {
 
     const amount = qty * PRICE_PER_PACK;
     const order = await createOrder({ qty, amount, orderInfo });
-    sseBroadcast({ type: 'new-order', orderId: order.id, amount, buyer: orderInfo.name, email: orderInfo.email, createdAt: Date.now() });
 
     const upiLink = buildUpiLink({
       vpa: MERCHANT_VPA,
@@ -108,14 +89,12 @@ app.get('/api/orders/:id/status', async (req, res) => {
   }
 });
 
-// POST /api/orders/:id/utr — buyer submits their UPI reference number
-// (UTR), which is mandatory, so you have something exact to match in
-// your bank/UPI app instead of matching on amount + timing alone.
+// POST /api/orders/:id/utr — buyer optionally submits their UPI
+// reference number, so you have something exact to match in your
+// bank/UPI app instead of matching on amount + timing alone.
 app.post('/api/orders/:id/utr', async (req, res) => {
   try {
-    const utr = String(req.body?.utr || '').trim();
-    if (!utr) return res.status(400).json({ error: 'UPI reference number is required.' });
-    const order = await setUtr(req.params.id, utr);
+    const order = await setUtr(req.params.id, req.body?.utr || '');
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({ ok: true });
   } catch (err) {
@@ -234,45 +213,17 @@ app.get('/api/admin/session', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/admin/events — SSE stream for live notifications. The
-// dashboard subscribes on boot; whenever a buyer reaches the payment
-// page (POST /api/orders creates the order), `new-order` events are
-// pushed here so the bell rings instantly without waiting on polling.
-app.get('/api/admin/events', requireAdmin, (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.write(': connected\n\n');
-  sseClients.add(res);
-  req.on('close', () => sseClients.delete(res));
-});
-
 // POST /admin/login — { user, password } → sets the session cookie.
 app.post('/admin/login', (req, res) => {
   if (!process.env.ADMIN_USER || !process.env.ADMIN_PASSWORD) {
     return res.status(500).json({ error: 'Admin login is not configured on the server yet.' });
   }
   const { user, password } = req.body || {};
-  if (!user || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
-  }
   if (safeEqual(user, process.env.ADMIN_USER) && safeEqual(password, process.env.ADMIN_PASSWORD)) {
     setSessionCookie(req, res, createSessionToken());
     return res.json({ ok: true });
   }
   return res.status(401).json({ error: 'Invalid username or password' });
-});
-
-// GET /api/admin/config-check — unauthenticated probe so the dashboard
-// (or you) can tell whether the admin credentials are actually set on
-// the server. It reports only whether each value exists, never the values.
-app.get('/api/admin/config-check', (req, res) => {
-  res.json({
-    adminUserConfigured: Boolean(process.env.ADMIN_USER),
-    adminPasswordConfigured: Boolean(process.env.ADMIN_PASSWORD),
-    upiConfigured: Boolean(process.env.MERCHANT_VPA),
-    serverTime: new Date().toISOString(),
-  });
 });
 
 // POST /admin/logout — clears the session cookie.
