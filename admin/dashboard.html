@@ -740,7 +740,7 @@
 (function(){
   'use strict';
 
-  var state = { view: 'dashboard', stats: null, orders: null, customers: null, messages: null, reports: null, finances: null, charts: {} };
+  var state = { view: 'dashboard', stats: null, orders: null, customers: null, messages: null, reports: null, finances: null, charts: {}, chartMode:null, pollTimer:null, refreshing:false };
 
   // ---------------- helpers ----------------
   function escapeHtml(str){
