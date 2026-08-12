@@ -612,11 +612,10 @@
           <h2>Aerosol containment starts today</h2>
           <p>Single-use. No reprocessing. Order your introductory pack or subscribe for a steady clinic supply.</p>
           <div class="cta-row">
-            <button class="btn gold lg" onclick="showScreen('product')">
+            <button class="btn gold lg" onclick="scrollToPlans()">
               Order DAB now
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
             </button>
-            <a href="mailto:dantaresearch@gmail.com" class="btn outline lg" style="border-color:rgba(255,255,255,.4);color:#fff;">Ask a question first</a>
           </div>
         </div>
       </div>
@@ -1123,7 +1122,15 @@
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ qty: cart.qty, planKey: cart.planKey, unitPrice: cartPlan().price, deliverySpan: cart.deliverySpan, orderInfo })
+        body: JSON.stringify({
+          qty: cart.qty,
+          planKey: cart.planKey,
+          unitPrice: cartPlan().price,
+          amount: cartTotal(),
+          total: cartTotal(),
+          deliverySpan: cart.deliverySpan,
+          orderInfo
+        })
       });
       if(!res.ok){
         const err = await res.json().catch(() => ({}));
@@ -1131,15 +1138,9 @@
       }
       const data = await res.json();
       currentOrder = data;
-      // Keep a browser-side mirror so dashboard.html can use the same storefront inputs.
-      try {
-        const key = '91dab-orders-v2';
-        const rows = JSON.parse(localStorage.getItem(key) || '[]');
-        const mirror = { ...data, orderInfo: { ...orderInfo }, qty: cart.qty, planKey: cart.planKey, unitPrice: cartPlan().price, deliverySpan: cart.deliverySpan, status: data.status || 'pending', fulfillmentStatus: data.fulfillmentStatus || 'processing', createdAt: data.createdAt || Date.now() };
-        const idx = rows.findIndex(x => String(x.id || x.orderId) === String(mirror.orderId || mirror.id));
-        if(idx >= 0) rows[idx] = { ...rows[idx], ...mirror }; else rows.unshift(mirror);
-        localStorage.setItem(key, JSON.stringify(rows));
-      } catch(e) {}
+      if(typeof data.amount === 'number' && data.amount !== cartTotal()){
+        console.warn('Payment server returned ₹' + data.amount + ' but the selected plan totals ₹' + cartTotal() + '. The order server is not yet pricing by plan — see the note in the chat.');
+      }
       renderQrState(data);
       startCountdown(data.expiresAt);
       startPolling(data.orderId);
@@ -1200,12 +1201,6 @@
         const res = await fetch(`/api/orders/${orderId}/status`);
         if(!res.ok) return;
         const data = await res.json();
-        try {
-          const key = '91dab-orders-v2';
-          const rows = JSON.parse(localStorage.getItem(key) || '[]');
-          const idx = rows.findIndex(x => String(x.id || x.orderId) === String(orderId));
-          if(idx >= 0) { rows[idx] = { ...rows[idx], ...data, status:data.status, updatedAt:Date.now() }; localStorage.setItem(key, JSON.stringify(rows)); }
-        } catch(e) {}
         if(data.status === 'paid'){
           clearInterval(pollTimer); clearInterval(countdownTimer);
           showConfirmation(orderId);
@@ -1249,12 +1244,6 @@
         if(input) input.classList.add('field-error');
         return;
       }
-      try {
-        const key = '91dab-orders-v2';
-        const rows = JSON.parse(localStorage.getItem(key) || '[]');
-        const idx = rows.findIndex(x => String(x.id || x.orderId) === String(currentOrder.orderId));
-        if(idx >= 0) { rows[idx] = { ...rows[idx], utr: val, updatedAt:Date.now() }; localStorage.setItem(key, JSON.stringify(rows)); }
-      } catch(e) {}
       const pill = document.getElementById('statusPill');
       if(pill) pill.textContent = "Reference received — we'll confirm shortly";
       showToast("Thanks — we'll verify and confirm shortly");
