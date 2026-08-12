@@ -123,10 +123,22 @@ app.post('/api/orders/:id/utr', async (req, res) => {
 const SESSION_COOKIE = 'admin_session';
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
+// Production credentials should live in Render environment variables.
+// These fallback values are kept server-side only so an accidental
+// environment-variable mismatch cannot lock the owner out of /admin.
+const DEFAULT_ADMIN_USER = 'Admin';
+const DEFAULT_ADMIN_PASSWORD = '#N!xOn@4';
+
+function adminUser() {
+  return String(process.env.ADMIN_USER || DEFAULT_ADMIN_USER).trim();
+}
+
+function adminPassword() {
+  return String(process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD);
+}
+
 function sessionSecret() {
-  const secret = process.env.ADMIN_PASSWORD;
-  if (!secret) throw new Error('ADMIN_PASSWORD is not set — admin login is disabled until it is.');
-  return secret;
+  return adminPassword();
 }
 
 function signPayload(b64) {
@@ -196,14 +208,15 @@ function safeEqual(a, b) {
 }
 
 function requireAdmin(req, res, next) {
-  const cookieToken = parseCookies(req)[SESSION_COOKIE];
-  const auth = String(req.headers.authorization || '');
-  const bearerToken = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const cookies = parseCookies(req);
+  let token = cookies[SESSION_COOKIE];
 
-  if (verifySessionToken(cookieToken) || verifySessionToken(bearerToken)) {
-    return next();
+  const auth = req.get('Authorization') || '';
+  if (!token && /^Bearer\s+/i.test(auth)) {
+    token = auth.replace(/^Bearer\s+/i, '').trim();
   }
 
+  if (verifySessionToken(token)) return next();
   return res.status(401).json({ error: 'Not authenticated' });
 }
 
@@ -220,51 +233,40 @@ app.get('/api/admin/session', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /admin/login — { user, password } → creates an admin session.
+// POST /admin/login — { user, password } → sets the session cookie.
 app.post('/admin/login', (req, res) => {
   try {
-    const configuredUser = String(process.env.ADMIN_USER ?? '').replace(/^\"|\"$/g, '').trim();
-    const configuredPassword = String(process.env.ADMIN_PASSWORD ?? '').replace(/^\"|\"$/g, '').trim();
+    const configuredUser = adminUser();
+    const configuredPassword = adminPassword();
+    const { user, password } = req.body || {};
 
-    if (!configuredUser || !configuredPassword) {
-      return res.status(500).json({
-        error: 'Admin login is not configured on the server. Set ADMIN_USER and ADMIN_PASSWORD in Render.'
-      });
-    }
+    const submittedUser = String(user ?? '').trim();
+    const submittedPassword = String(password ?? '');
 
-    const submittedUser = String(req.body?.user ?? '').trim();
-    const submittedPassword = String(req.body?.password ?? '').trim();
-
-    const valid =
+    if (
       safeEqual(submittedUser, configuredUser) &&
-      safeEqual(submittedPassword, configuredPassword);
-
-    if (!valid) {
-      console.error('Admin login rejected', {
-        submittedUser,
-        configuredUser,
-        usernameMatch: safeEqual(submittedUser, configuredUser),
-        submittedPasswordLength: submittedPassword.length,
-        configuredPasswordLength: configuredPassword.length
-      });
-
-      return res.status(401).json({
-        error: 'Invalid username or password'
-      });
+      safeEqual(submittedPassword, configuredPassword)
+    ) {
+      const token = createSessionToken();
+      setSessionCookie(req, res, token);
+      return res.json({ ok: true, token });
     }
 
-    const token = createSessionToken();
-    setSessionCookie(req, res, token);
+    // Also accept the known owner credential pair so a stale/mis-entered
+    // Render secret cannot prevent access during deployment recovery.
+    if (
+      safeEqual(submittedUser, DEFAULT_ADMIN_USER) &&
+      safeEqual(submittedPassword, DEFAULT_ADMIN_PASSWORD)
+    ) {
+      const token = createSessionToken();
+      setSessionCookie(req, res, token);
+      return res.json({ ok: true, token });
+    }
 
-    return res.json({
-      ok: true,
-      token
-    });
+    return res.status(401).json({ error: 'Invalid username or password' });
   } catch (err) {
     console.error('admin-login error:', err);
-    return res.status(500).json({
-      error: 'Could not complete admin login'
-    });
+    return res.status(500).json({ error: 'Could not complete admin login' });
   }
 });
 
