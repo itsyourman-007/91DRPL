@@ -1431,6 +1431,22 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
 // ---------------- auth ----------------
 var loginScreen = document.getElementById('loginScreen');
 var app = document.getElementById('app');
+var ADMIN_TOKEN_KEY = '91dab-admin-token';
+
+function getAdminToken(){
+  try {
+    return sessionStorage.getItem(ADMIN_TOKEN_KEY) || '';
+  } catch(e) {
+    return '';
+  }
+}
+
+function setAdminToken(token){
+  try {
+    if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch(e) {}
+}
 
 function showLogin(){
   app.hidden = true;
@@ -1446,12 +1462,42 @@ function showApp(){
   app.hidden = false;
 }
 
+// Add the current session token to every protected API call.
+var baseApi = api;
+api = async function(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {});
+
+  var token = getAdminToken();
+  if (token) {
+    opts.headers.Authorization = 'Bearer ' + token;
+  }
+
+  try {
+    return await baseApi(path, opts);
+  } catch (e) {
+    if (e && e.message === 'Not authenticated') {
+      setAdminToken('');
+      showLogin();
+    }
+    throw e;
+  }
+};
+
 async function checkSession(){
   try {
+    var headers = {};
+    var token = getAdminToken();
+
+    if (token) {
+      headers.Authorization = 'Bearer ' + token;
+    }
+
     var res = await fetch('/api/admin/session', {
       method: 'GET',
       credentials: 'same-origin',
-      cache: 'no-store'
+      cache: 'no-store',
+      headers: headers
     });
 
     if (res.ok) {
@@ -1460,6 +1506,8 @@ async function checkSession(){
       startPolling();
       return;
     }
+
+    setAdminToken('');
   } catch (e) {
     console.error('Session check failed:', e);
   }
@@ -1495,27 +1543,27 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
     });
 
     var data = {};
-
     try {
       data = await res.json();
     } catch (e) {}
 
     if (!res.ok) {
-      throw new Error(
-        data.error || 'Invalid username or password'
-      );
+      throw new Error(data.error || 'Invalid username or password');
     }
 
-    // Server accepted the credentials and created the session cookie.
+    if (!data.token) {
+      throw new Error('Login succeeded but the server did not return a session token.');
+    }
+
+    setAdminToken(data.token);
     document.getElementById('loginPassword').value = '';
 
-    // Reload so the new cookie is used by checkSession().
-    window.location.replace('/admin');
-
+    await checkSession();
   } catch (e) {
     console.error('Login error:', e);
     err.textContent = e.message;
     err.hidden = false;
+  } finally {
     btn.disabled = false;
     btn.textContent = 'Sign in';
   }
@@ -1524,6 +1572,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
 document.getElementById('logoutBtn').addEventListener('click', async function(){
   stopPolling();
   state.knownOrderCount = null;
+  setAdminToken('');
 
   try {
     await fetch('/admin/logout', {
@@ -1536,6 +1585,7 @@ document.getElementById('logoutBtn').addEventListener('click', async function(){
 
   showLogin();
 });
+
 // ---------------- boot ----------------
 checkSession();
 
