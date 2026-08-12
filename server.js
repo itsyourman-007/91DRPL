@@ -369,29 +369,47 @@ app.get('/api/admin/session', requireAdmin, (req, res) => {
 // POST /admin/login
 app.post('/admin/login', (req, res) => {
   try {
-    const adminUser = process.env.ADMIN_USER;
-    const adminPassword = process.env.ADMIN_PASSWORD;
+    const configuredUser = String(process.env.ADMIN_USER || '').trim();
+    const configuredPassword = String(process.env.ADMIN_PASSWORD || '');
 
-    if (!adminUser || !adminPassword) {
+    if (!configuredUser || !configuredPassword) {
       return res.status(500).json({
-        error: 'Admin login is not configured on the server.'
+        error: 'Admin login is not configured on the server yet.'
       });
     }
 
-    const { user, password } = req.body || {};
+    const submittedUser = String(req.body?.user || '').trim();
+    const submittedPassword = String(req.body?.password || '');
 
-    if (
-      safeEqual(user, adminUser) &&
-      safeEqual(password, adminPassword)
-    ) {
+    const userMatches = safeEqual(
+      submittedUser,
+      configuredUser
+    );
+
+    const passwordMatches = safeEqual(
+      submittedPassword,
+      configuredPassword
+    );
+
+    if (userMatches && passwordMatches) {
       const token = createSessionToken();
 
       setSessionCookie(res, token);
 
       return res.json({
-        ok: true
+        ok: true,
+        token
       });
     }
+
+    console.error('Admin login failed:', {
+      submittedUser,
+      configuredUser,
+      userMatches,
+      passwordLength: submittedPassword.length,
+      configuredPasswordLength: configuredPassword.length,
+      passwordMatches
+    });
 
     return res.status(401).json({
       error: 'Invalid username or password'
