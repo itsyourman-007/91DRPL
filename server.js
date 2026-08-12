@@ -38,82 +38,42 @@ const MERCHANT_NAME = process.env.MERCHANT_NAME || '91DAB';
 // =================================================================
 
 // POST /api/orders — create a fresh order + a 5-minute UPI QR for it.
-// Amount is computed here from qty + selected subscription plan.
+// Amount is computed here from qty, never trusted from the client.
 app.post('/api/orders', async (req, res) => {
   try {
-    const { qty, planKey, orderInfo } = req.body || {};
+    const { qty, orderInfo } = req.body || {};
 
     if (!Number.isInteger(qty) || qty < 1) {
       return res.status(400).json({ error: 'Invalid quantity' });
     }
-
-    if (
-      !orderInfo?.name ||
-      !orderInfo?.email ||
-      !orderInfo?.phone ||
-      !orderInfo?.address
-    ) {
+    if (!orderInfo?.name || !orderInfo?.email || !orderInfo?.phone || !orderInfo?.address) {
       return res.status(400).json({ error: 'Missing delivery details' });
     }
-
     if (!MERCHANT_VPA) {
-      return res.status(500).json({
-        error: 'MERCHANT_VPA is not configured on the server'
-      });
+      return res.status(500).json({ error: 'MERCHANT_VPA is not configured on the server' });
     }
 
-    // Server-side prices for each plan.
-    const PLAN_PRICES = {
-      introductory: 500,
-      monthly: 3000,
-      yearly: 30000,
-    };
+    const amount = qty * PRICE_PER_PACK;
+    const order = await createOrder({ qty, amount, orderInfo });
 
-    // Use the selected plan sent by shop.html.
-    const selectedPlan = planKey || 'introductory';
-
-    if (!Object.prototype.hasOwnProperty.call(PLAN_PRICES, selectedPlan)) {
-      return res.status(400).json({
-        error: 'Invalid subscription plan'
-      });
-    }
-
-    // Calculate the real amount on the server.
-    const unitPrice = PLAN_PRICES[selectedPlan];
-    const amount = qty * unitPrice;
-
-    // Create the order with the correct amount.
-    const order = await createOrder({
-      qty,
-      amount,
-      orderInfo,
-    });
-
-    // Build UPI payment link using the correct amount.
     const upiLink = buildUpiLink({
       vpa: MERCHANT_VPA,
       payeeName: MERCHANT_NAME,
       amount,
       orderId: order.id,
     });
-
-    // Generate QR code.
     const qrDataUrl = await buildQrDataUrl(upiLink);
 
     res.json({
       orderId: order.id,
       amount,
-      planKey: selectedPlan,
-      unitPrice,
       upiLink,
       qrDataUrl,
       expiresAt: order.expiresAt,
     });
   } catch (err) {
     console.error('create-order error:', err);
-    res.status(500).json({
-      error: 'Could not create order'
-    });
+    res.status(500).json({ error: 'Could not create order' });
   }
 });
 
@@ -121,20 +81,11 @@ app.post('/api/orders', async (req, res) => {
 app.get('/api/orders/:id/status', async (req, res) => {
   try {
     const order = await getOrder(req.params.id);
-
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    res.json({
-      status: order.status,
-      expiresAt: order.expiresAt
-    });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    res.json({ status: order.status, expiresAt: order.expiresAt });
   } catch (err) {
     console.error('order-status error:', err);
-    res.status(500).json({
-      error: 'Could not load order'
-    });
+    res.status(500).json({ error: 'Could not load order' });
   }
 });
 
@@ -143,23 +94,12 @@ app.get('/api/orders/:id/status', async (req, res) => {
 // bank/UPI app instead of matching on amount + timing alone.
 app.post('/api/orders/:id/utr', async (req, res) => {
   try {
-    const order = await setUtr(
-      req.params.id,
-      req.body?.utr || ''
-    );
-
-    if (!order) {
-      return res.status(404).json({
-        error: 'Order not found'
-      });
-    }
-
+    const order = await setUtr(req.params.id, req.body?.utr || '');
+    if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({ ok: true });
   } catch (err) {
     console.error('set-utr error:', err);
-    res.status(500).json({
-      error: 'Could not save reference number'
-    });
+    res.status(500).json({ error: 'Could not save reference number' });
   }
 });
 
@@ -180,257 +120,165 @@ app.post('/api/orders/:id/utr', async (req, res) => {
 // GET /api/admin/session on load to find out which state to show.
 // =================================================================
 
-// =================================================================
-// Admin authentication
-// =================================================================
-
 const SESSION_COOKIE = 'admin_session';
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 function sessionSecret() {
   const secret = process.env.ADMIN_PASSWORD;
-
-  if (!secret) {
-    throw new Error(
-      'ADMIN_PASSWORD is not set — admin login is disabled.'
-    );
-  }
-
+  if (!secret) throw new Error('ADMIN_PASSWORD is not set — admin login is disabled until it is.');
   return secret;
 }
 
-function signPayload(payload) {
-  return crypto
-    .createHmac('sha256', sessionSecret())
-    .update(payload)
-    .digest('base64url');
+function signPayload(b64) {
+  return crypto.createHmac('sha256', sessionSecret()).update(b64).digest('base64url');
 }
 
 function createSessionToken() {
-  const payload = Buffer
-    .from(JSON.stringify({
-      exp: Date.now() + SESSION_MAX_AGE_MS
-    }))
-    .toString('base64url');
-
-  const signature = signPayload(payload);
-
-  return `${payload}.${signature}`;
+  const b64 = Buffer.from(JSON.stringify({ exp: Date.now() + SESSION_MAX_AGE_MS })).toString('base64url');
+  return `${b64}.${signPayload(b64)}`;
 }
 
 function verifySessionToken(token) {
-  if (
-    !token ||
-    typeof token !== 'string'
-  ) {
-    return false;
-  }
-
-  const parts = token.split('.');
-
-  if (parts.length !== 2) {
-    return false;
-  }
-
-  const payload = parts[0];
-  const signature = parts[1];
-
-  let expectedSignature;
-
+  if (!token || typeof token !== 'string' || !token.includes('.')) return false;
+  const [b64, sig] = token.split('.');
+  let expectedSig;
   try {
-    expectedSignature = signPayload(payload);
-  } catch (err) {
-    return false;
+    expectedSig = signPayload(b64);
+  } catch {
+    return false; // ADMIN_PASSWORD not configured
   }
-
-  const sigA = Buffer.from(signature);
-  const sigB = Buffer.from(expectedSignature);
-
-  if (
-    sigA.length !== sigB.length ||
-    !crypto.timingSafeEqual(sigA, sigB)
-  ) {
-    return false;
-  }
-
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return false;
   try {
-    const data = JSON.parse(
-      Buffer.from(payload, 'base64url').toString('utf8')
-    );
-
-    return (
-      typeof data.exp === 'number' &&
-      data.exp > Date.now()
-    );
-  } catch (err) {
+    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
+    return typeof payload.exp === 'number' && payload.exp > Date.now();
+  } catch {
     return false;
   }
 }
 
 function parseCookies(req) {
-  const header = req.headers.cookie || '';
+  const header = req.headers.cookie;
   const cookies = {};
-
+  if (!header) return cookies;
   header.split(';').forEach((part) => {
-    const index = part.indexOf('=');
-
-    if (index === -1) {
-      return;
-    }
-
-    const key = part.slice(0, index).trim();
-    const value = part.slice(index + 1).trim();
-
-    cookies[key] = value;
+    const i = part.indexOf('=');
+    if (i === -1) return;
+    cookies[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
   });
-
   return cookies;
 }
 
-function setSessionCookie(res, token) {
-  const isProduction = process.env.NODE_ENV === 'production';
-
-  const cookieParts = [
+function setSessionCookie(req, res, token) {
+  const attrs = [
     `${SESSION_COOKIE}=${token}`,
     'HttpOnly',
     'Path=/',
     `Max-Age=${Math.floor(SESSION_MAX_AGE_MS / 1000)}`,
-    'SameSite=Lax'
+    'SameSite=Lax',
   ];
-
-  // Render/production runs over HTTPS.
-  if (isProduction) {
-    cookieParts.push('Secure');
-  }
-
-  res.setHeader(
-    'Set-Cookie',
-    cookieParts.join('; ')
-  );
+  if (req.secure) attrs.push('Secure');
+  res.setHeader('Set-Cookie', attrs.join('; '));
 }
 
-function clearSessionCookie(res) {
-  const cookieParts = [
-    `${SESSION_COOKIE}=`,
-    'HttpOnly',
-    'Path=/',
-    'Max-Age=0',
-    'SameSite=Lax'
-  ];
-
-  if (process.env.NODE_ENV === 'production') {
-    cookieParts.push('Secure');
-  }
-
-  res.setHeader(
-    'Set-Cookie',
-    cookieParts.join('; ')
-  );
+function clearSessionCookie(req, res) {
+  const attrs = [`${SESSION_COOKIE}=`, 'HttpOnly', 'Path=/', 'Max-Age=0', 'SameSite=Lax'];
+  if (req.secure) attrs.push('Secure');
+  res.setHeader('Set-Cookie', attrs.join('; '));
 }
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
   const bufB = Buffer.from(String(b ?? ''));
-
-  if (bufA.length !== bufB.length) {
-    return false;
-  }
-
+  if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
 function requireAdmin(req, res, next) {
-  const cookies = parseCookies(req);
-  const token = cookies[SESSION_COOKIE];
+  const cookieToken = parseCookies(req)[SESSION_COOKIE];
+  const auth = String(req.headers.authorization || '');
+  const bearerToken = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
 
-  if (verifySessionToken(token)) {
+  if (verifySessionToken(cookieToken) || verifySessionToken(bearerToken)) {
     return next();
   }
 
-  return res.status(401).json({
-    error: 'Not authenticated'
-  });
+  return res.status(401).json({ error: 'Not authenticated' });
 }
 
-// GET /admin — dashboard shell
+// GET /admin — the dashboard shell. Served to everyone; it carries no
+// data of its own, and its own JS shows the login screen or the
+// dashboard depending on GET /api/admin/session below.
 app.get('/admin', (req, res) => {
-  res.sendFile(
-    path.join(__dirname, 'admin', 'dashboard.html')
-  );
+  res.sendFile(path.join(__dirname, 'admin', 'dashboard.html'));
 });
 
-// GET /api/admin/session — verify current admin session
+// GET /api/admin/session — lets the dashboard's boot JS check "am I
+// logged in?" without pulling real data.
 app.get('/api/admin/session', requireAdmin, (req, res) => {
-  res.json({
-    ok: true
-  });
+  res.json({ ok: true });
 });
 
-// POST /admin/login
+// POST /admin/login — { user, password } → creates an admin session.
 app.post('/admin/login', (req, res) => {
   try {
-    const configuredUser = String(process.env.ADMIN_USER || '').trim();
-    const configuredPassword = String(process.env.ADMIN_PASSWORD || '');
+    const configuredUser = String(process.env.ADMIN_USER ?? '').replace(/^\"|\"$/g, '').trim();
+    const configuredPassword = String(process.env.ADMIN_PASSWORD ?? '').replace(/^\"|\"$/g, '').trim();
 
     if (!configuredUser || !configuredPassword) {
       return res.status(500).json({
-        error: 'Admin login is not configured on the server yet.'
+        error: 'Admin login is not configured on the server. Set ADMIN_USER and ADMIN_PASSWORD in Render.'
       });
     }
 
-    const submittedUser = String(req.body?.user || '').trim();
-    const submittedPassword = String(req.body?.password || '');
+    const submittedUser = String(req.body?.user ?? '').trim();
+    const submittedPassword = String(req.body?.password ?? '').trim();
 
-    const userMatches = safeEqual(
-      submittedUser,
-      configuredUser
-    );
+    const valid =
+      safeEqual(submittedUser, configuredUser) &&
+      safeEqual(submittedPassword, configuredPassword);
 
-    const passwordMatches = safeEqual(
-      submittedPassword,
-      configuredPassword
-    );
+    if (!valid) {
+      console.error('Admin login rejected', {
+        submittedUser,
+        configuredUser,
+        usernameMatch: safeEqual(submittedUser, configuredUser),
+        submittedPasswordLength: submittedPassword.length,
+        configuredPasswordLength: configuredPassword.length
+      });
 
-    if (userMatches && passwordMatches) {
-      const token = createSessionToken();
-
-      setSessionCookie(res, token);
-
-      return res.json({
-        ok: true,
-        token
+      return res.status(401).json({
+        error: 'Invalid username or password'
       });
     }
 
-    console.error('Admin login failed:', {
-      submittedUser,
-      configuredUser,
-      userMatches,
-      passwordLength: submittedPassword.length,
-      configuredPasswordLength: configuredPassword.length,
-      passwordMatches
-    });
+    const token = createSessionToken();
+    setSessionCookie(req, res, token);
 
-    return res.status(401).json({
-      error: 'Invalid username or password'
+    return res.json({
+      ok: true,
+      token
     });
-
   } catch (err) {
     console.error('admin-login error:', err);
-
     return res.status(500).json({
       error: 'Could not complete admin login'
     });
   }
 });
 
-// POST /admin/logout
+// POST /admin/logout — clears the session cookie.
+//
+// Note: this is a stateless signed token, not a server-side session, so
+// logout only clears the cookie in the browser that calls it — the token
+// itself isn't revoked and would still verify if replayed before it
+// naturally expires (12h). That's an acceptable tradeoff for a single
+// shared admin password with no session database; if that ever stops
+// being true, add a `revoked_at` check against a small sessions table.
 app.post('/admin/logout', (req, res) => {
-  clearSessionCookie(res);
-
-  res.json({
-    ok: true
-  });
+  clearSessionCookie(req, res);
+  res.json({ ok: true });
 });
 
 // ---- Dashboard / Orders / Customers ----
@@ -482,29 +330,16 @@ app.get('/api/admin/orders/export.csv', requireAdmin, async (req, res) => {
       'Return Status', 'Refunded Amount', 'Created At', 'Paid At',
     ];
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    // Excel (and Sheets) auto-detect any all-digit CSV cell as a number,
-    // then re-render long ones in scientific notation — silently
-    // truncating UTRs, phone numbers, pincodes, and tracking numbers,
-    // which are identifiers, not quantities. Wrapping them as ="..."
-    // is the standard trick to force Excel to keep them as literal text.
-    const escapeAsText = (v) => {
-      const str = String(v ?? '');
-      if (!str) return '""';
-      return `"=""${str.replace(/"/g, '""')}"""`;
-    };
     const lines = [header.join(',')];
     for (const o of orders) {
       lines.push([
-        escape(o.id), escape(o.orderInfo.name), escape(o.orderInfo.email),
-        escapeAsText(o.orderInfo.phone), escape(o.orderInfo.address),
-        escape(o.orderInfo.city), escape(o.orderInfo.state), escapeAsText(o.orderInfo.pincode),
-        escape(o.qty), escape(o.amount),
-        escape(o.status), escape(o.fulfillmentStatus), escapeAsText(o.utr),
-        escape(o.carrier), escapeAsText(o.trackingNumber),
-        escape(o.returnStatus), escape(o.refundedAmount),
-        escape(new Date(o.createdAt).toISOString()),
-        escape(o.paidAt ? new Date(o.paidAt).toISOString() : ''),
-      ].join(','));
+        o.id, o.orderInfo.name, o.orderInfo.email, o.orderInfo.phone, o.orderInfo.address,
+        o.orderInfo.city, o.orderInfo.state, o.orderInfo.pincode, o.qty, o.amount,
+        o.status, o.fulfillmentStatus, o.utr, o.carrier, o.trackingNumber,
+        o.returnStatus, o.refundedAmount,
+        new Date(o.createdAt).toISOString(),
+        o.paidAt ? new Date(o.paidAt).toISOString() : '',
+      ].map(escape).join(','));
     }
     res.set('Content-Type', 'text/csv');
     res.set('Content-Disposition', `attachment; filename="91dab-orders-${Date.now()}.csv"`);
