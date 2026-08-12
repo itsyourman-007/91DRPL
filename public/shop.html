@@ -344,7 +344,7 @@
           </div>
         </div>
         <div class="hero-photo">
-          <img src="dab_img.png" alt="DAB dental aerosol blocker product photo, unboxed beside its packaging">
+          <img src="dab-product.png" alt="DAB dental aerosol blocker product photo, unboxed beside its packaging">
           <div class="tag">DAB · Pack of 12</div>
         </div>
       </div>
@@ -505,7 +505,7 @@
             <div class="tier-body">
               <div class="tier-name">Introductory pack</div>
               <div class="tier-price">&#8377;500</div>
-              <div class="tier-period">/one-time</div>
+              <div class="tier-period">one-time</div>
               <div class="tier-qty"><b>12</b><span>DAB pieces</span></div>
               <div class="tier-desc">Try DAB before committing to a subscription — a pack of 12 to evaluate in your practice.</div>
             </div>
@@ -1131,6 +1131,15 @@
       }
       const data = await res.json();
       currentOrder = data;
+      // Keep a browser-side mirror so dashboard.html can use the same storefront inputs.
+      try {
+        const key = '91dab-orders-v2';
+        const rows = JSON.parse(localStorage.getItem(key) || '[]');
+        const mirror = { ...data, orderInfo: { ...orderInfo }, qty: cart.qty, planKey: cart.planKey, unitPrice: cartPlan().price, deliverySpan: cart.deliverySpan, status: data.status || 'pending', fulfillmentStatus: data.fulfillmentStatus || 'processing', createdAt: data.createdAt || Date.now() };
+        const idx = rows.findIndex(x => String(x.id || x.orderId) === String(mirror.orderId || mirror.id));
+        if(idx >= 0) rows[idx] = { ...rows[idx], ...mirror }; else rows.unshift(mirror);
+        localStorage.setItem(key, JSON.stringify(rows));
+      } catch(e) {}
       renderQrState(data);
       startCountdown(data.expiresAt);
       startPolling(data.orderId);
@@ -1191,6 +1200,12 @@
         const res = await fetch(`/api/orders/${orderId}/status`);
         if(!res.ok) return;
         const data = await res.json();
+        try {
+          const key = '91dab-orders-v2';
+          const rows = JSON.parse(localStorage.getItem(key) || '[]');
+          const idx = rows.findIndex(x => String(x.id || x.orderId) === String(orderId));
+          if(idx >= 0) { rows[idx] = { ...rows[idx], ...data, status:data.status, updatedAt:Date.now() }; localStorage.setItem(key, JSON.stringify(rows)); }
+        } catch(e) {}
         if(data.status === 'paid'){
           clearInterval(pollTimer); clearInterval(countdownTimer);
           showConfirmation(orderId);
@@ -1234,6 +1249,12 @@
         if(input) input.classList.add('field-error');
         return;
       }
+      try {
+        const key = '91dab-orders-v2';
+        const rows = JSON.parse(localStorage.getItem(key) || '[]');
+        const idx = rows.findIndex(x => String(x.id || x.orderId) === String(currentOrder.orderId));
+        if(idx >= 0) { rows[idx] = { ...rows[idx], utr: val, updatedAt:Date.now() }; localStorage.setItem(key, JSON.stringify(rows)); }
+      } catch(e) {}
       const pill = document.getElementById('statusPill');
       if(pill) pill.textContent = "Reference received — we'll confirm shortly";
       showToast("Thanks — we'll verify and confirm shortly");
