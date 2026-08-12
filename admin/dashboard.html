@@ -677,6 +677,11 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   'use strict';
   // 91DAB admin — Acme Ink design. All data via /api/admin/* (see server.js).
 
+  var LOCAL_STORE_KEY = '91dab-orders-v2';
+  var LOCAL_SESSION_KEY = '91dab-admin-session';
+  var LOCAL_ADMIN_USER = 'admin';
+  var LOCAL_ADMIN_PASSWORD = 'admin123';
+  var localMode = false;
   var state = { view:'dashboard', stats:null, orders:null, customers:null, messages:null, reports:null, finances:null, charts:{}, knownOrderCount:null, notifQueue:[] };
   var pollTimer = null;
 
@@ -716,7 +721,81 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   }
   function invalidate(){ state.stats = null; state.reports = null; state.finances = null; }
 
+  function localReadOrders(){
+    try { return JSON.parse(localStorage.getItem(LOCAL_STORE_KEY) || '[]'); } catch(e) { return []; }
+  }
+  function localWriteOrders(rows){
+    try { localStorage.setItem(LOCAL_STORE_KEY, JSON.stringify(rows || [])); } catch(e) {}
+  }
+  function localNormalizeOrder(o){
+    var oi = o && o.orderInfo ? o.orderInfo : {};
+    var qty = Number(o.qty || 0);
+    var amount = Number(o.amount != null ? o.amount : (o.unitPrice || 0) * qty);
+    return {
+      id: String(o.id || o.orderId || ('LOCAL-' + Date.now().toString(36).toUpperCase())),
+      qty: qty, amount: amount, status: o.status || 'pending',
+      fulfillmentStatus: o.fulfillmentStatus || 'processing',
+      returnStatus: o.returnStatus || null, returnReason: o.returnReason || '', refundedAmount: Number(o.refundedAmount || 0),
+      createdAt: Number(o.createdAt || Date.now()), paidAt: o.paidAt || null, utr: o.utr || '',
+      orderInfo: oi, buyer: oi.name || o.buyer || '—', total: amount,
+      planKey: o.planKey || 'introductory', unitPrice: Number(o.unitPrice || 0), deliverySpan: o.deliverySpan || null
+    };
+  }
+  function localOrders(){ return localReadOrders().map(localNormalizeOrder); }
+  function localSaveOrder(order){
+    var rows = localOrders(); var normalized = localNormalizeOrder(order);
+    var idx = rows.findIndex(function(x){ return x.id === normalized.id; });
+    if(idx >= 0) rows[idx] = Object.assign({}, rows[idx], normalized, { orderInfo: Object.assign({}, rows[idx].orderInfo || {}, normalized.orderInfo || {}) });
+    else rows.unshift(normalized);
+    localWriteOrders(rows); return normalized;
+  }
+  function localStats(rows){
+    rows = rows || localOrders();
+    var paid = rows.filter(function(o){ return o.status === 'paid'; });
+    var pending = rows.filter(function(o){ return o.status === 'pending'; });
+    var expired = rows.filter(function(o){ return o.status === 'expired'; });
+    var revenue = paid.reduce(function(a,o){ return a + Number(o.amount||0); },0);
+    var avg = paid.length ? revenue / paid.length : 0;
+    var now = Date.now(), week=7*86400000;
+    var weekly = [];
+    for(var w=6;w>=0;w--){
+      var end=now-w*week, start=end-week;
+      var r=rows.filter(function(o){return o.createdAt>=start && o.createdAt<end;});
+      weekly.push({label:new Date(start).toLocaleDateString('en-IN',{day:'numeric',month:'short'}),orders:r.length,sales:r.filter(function(o){return o.status==='paid';}).reduce(function(a,o){return a+Number(o.amount||0);},0),isCurrent:w===0});
+    }
+    var monthly=[];
+    for(var m=11;m>=0;m--){
+      var dt=new Date(); dt.setDate(1); dt.setMonth(dt.getMonth()-m);
+      var start=new Date(dt.getFullYear(),dt.getMonth(),1).getTime();
+      var end=new Date(dt.getFullYear(),dt.getMonth()+1,1).getTime();
+      var mr=paid.filter(function(o){return o.createdAt>=start&&o.createdAt<end;}).reduce(function(a,o){return a+Number(o.amount||0);},0);
+      monthly.push({label:dt.toLocaleDateString('en-IN',{month:'short'}),revenue:mr,revenuePrevYear:0});
+    }
+    return { totals:{totalRevenue:revenue,totalOrders:rows.length,paidOrders:paid.length,avgOrderValue:avg,pendingOrders:pending.length}, weekly:weekly, monthly:monthly, recentOrders:rows.slice().sort(function(a,b){return b.createdAt-a.createdAt;}).slice(0,10).map(function(o){return {id:o.id,buyer:o.buyer,total:o.amount,status:o.status,createdAt:o.createdAt};}) };
+  }
+  function localCustomers(rows){
+    var map={}; (rows||localOrders()).forEach(function(o){ var e=o.orderInfo.email||'unknown'; var c=map[e]||(map[e]={name:o.orderInfo.name||'—',email:e,phone:o.orderInfo.phone||'—',city:o.orderInfo.city||'',orders:0,totalSpent:0,lastOrderAt:o.createdAt}); c.orders++; if(o.status==='paid') c.totalSpent+=Number(o.amount||0); c.lastOrderAt=Math.max(c.lastOrderAt||0,o.createdAt); }); return Object.keys(map).map(function(k){return map[k];});
+  }
+  function localReports(rows){
+    rows=rows||localOrders(); var total=rows.length, paid=rows.filter(function(o){return o.status==='paid';}), returned=rows.filter(function(o){return o.returnStatus&&o.returnStatus!=='rejected';}); var customers=localCustomers(rows);
+    var statusBreakdown=['paid','pending','expired'].map(function(st){var c=rows.filter(function(o){return o.status===st;}).length; return {status:st,count:c,percent:total?Math.round(c*1000/total)/10:0};});
+    return {confirmationRate:total?Math.round(paid.length*1000/total)/10:0,avgOrderValue:paid.length?paid.reduce(function(a,o){return a+Number(o.amount||0);},0)/paid.length:0,repeatCustomers:customers.filter(function(c){return c.orders>1;}).length,returnRate:total?Math.round(returned.length*1000/total)/10:0,topCustomers:customers.sort(function(a,b){return b.totalSpent-a.totalSpent;}).slice(0,10),statusBreakdown:statusBreakdown};
+  }
+  function localFinances(rows){ rows=rows||localOrders(); var gross=rows.filter(function(o){return o.status==='paid';}).reduce(function(a,o){return a+Number(o.amount||0);},0), refunded=rows.reduce(function(a,o){return a+Number(o.refundedAmount||0);},0); return {grossRevenue:gross,refunded:refunded,netRevenue:gross-refunded,ordersPaid:rows.filter(function(o){return o.status==='paid';}).length,monthly:localStats(rows).monthly}; }
+  async function localApi(path, opts){
+    var rows=localOrders();
+    if(path==='/api/admin/stats') return localStats(rows);
+    if(path==='/api/admin/orders') return {orders:rows};
+    if(path==='/api/admin/customers') return {customers:localCustomers(rows)};
+    if(path==='/api/admin/reports') return localReports(rows);
+    if(path==='/api/admin/finances') return localFinances(rows);
+    if(path==='/api/admin/messages') return {messages:[]};
+    var m=path.match(/^\/api\/admin\/orders\/([^/]+)\/(confirm|fulfillment|return)$/);
+    if(m){ var id=decodeURIComponent(m[1]), action=m[2], body={}; try{body=opts&&opts.body?JSON.parse(opts.body):{};}catch(e){}; var o=rows.find(function(x){return x.id===id;}); if(!o) throw new Error('Order not found'); if(action==='confirm') {o.status='paid'; o.paidAt=Date.now();} if(action==='fulfillment') o.fulfillmentStatus=body.status||o.fulfillmentStatus; if(action==='return') o.returnStatus=body.status||o.returnStatus; localSaveOrder(o); return {order:o}; }
+    throw new Error('This action needs the order server.');
+  }
   async function api(path, opts){
+    if(localMode) return localApi(path, opts);
     var res;
     try { res = await fetch(path, opts); }
     catch (e) { throw new Error('Could not reach the server — check your connection and try again.'); }
@@ -1354,13 +1433,16 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   var app = document.getElementById('app');
   function showLogin(){ app.hidden = true; loginScreen.hidden = false; document.getElementById('loginForm').hidden = false; document.getElementById('loginCheckingState').hidden = true; document.getElementById('loginPassword').value = ''; document.getElementById('loginUser').focus(); }
   function showApp(){ loginScreen.hidden = true; app.hidden = false; }
+  function enableLocalMode(){ localMode = true; try { sessionStorage.setItem(LOCAL_SESSION_KEY,'1'); } catch(e) {} }
+  function hasLocalSession(){ try { return sessionStorage.getItem(LOCAL_SESSION_KEY)==='1'; } catch(e){ return false; } }
 
   async function checkSession(){
     try {
-      var res = await fetch('/api/admin/session');
-      if (res.ok) { showApp(); loadDashboard(); startPolling(); }
-      else showLogin();
-    } catch (e) { showLogin(); }
+      var res = await fetch('/api/admin/session', {credentials:'same-origin'});
+      if (res.ok) { localMode=false; showApp(); loadDashboard(); startPolling(); return; }
+    } catch (e) {}
+    if (hasLocalSession()) { enableLocalMode(); showApp(); loadDashboard(); startPolling(); }
+    else showLogin();
   }
   document.getElementById('loginForm').addEventListener('submit', async function(e){
     e.preventDefault();
@@ -1371,19 +1453,34 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
     var pass = document.getElementById('loginPassword').value;
     btn.disabled = true; btn.textContent = 'Signing in…';
     try {
-      var res = await fetch('/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ user: user, password: pass }) });
-      var data = {};
-      try { data = await res.json(); } catch (e2) {}
-      if (!res.ok) throw new Error(data.error || 'Invalid username or password');
+      var serverWorked = false;
+      try {
+        var res = await fetch('/admin/login', { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ user:user, password:pass }) });
+        var data = {}; try { data = await res.json(); } catch(e2) {}
+        if (res.ok) serverWorked = true;
+        else if (res.status !== 404 && res.status !== 405) throw new Error(data.error || 'Invalid username or password');
+      } catch (serverErr) {
+        if (serverErr && serverErr.message === 'Invalid username or password') throw serverErr;
+      }
+      if (!serverWorked) {
+        if (location.protocol !== 'file:' && !(location.hostname==='localhost'||location.hostname==='127.0.0.1')) throw new Error('The admin login server is unavailable. Start the store backend or open the site through its web server.');
+        if (user !== LOCAL_ADMIN_USER || pass !== LOCAL_ADMIN_PASSWORD) throw new Error('Invalid username or password. Standalone dashboard credentials are admin / admin123.');
+        enableLocalMode();
+      } else { localMode=false; try{ sessionStorage.removeItem(LOCAL_SESSION_KEY); }catch(e){} }
       document.getElementById('loginPassword').value = '';
-      showApp(); loadDashboard(); startPolling();
+      showApp(); await loadDashboard(true); startPolling();
     } catch (e3) { err.textContent = e3.message; err.hidden = false; }
     finally { btn.disabled = false; btn.textContent = 'Sign in'; }
   });
   document.getElementById('logoutBtn').addEventListener('click', async function(){
     stopPolling(); state.knownOrderCount = null;
-    try { await fetch('/admin/logout', { method:'POST' }); } catch (e) {}
+    if(localMode) { try{sessionStorage.removeItem(LOCAL_SESSION_KEY);}catch(e){} showLogin(); return; }
+    try { await fetch('/admin/logout', { method:'POST', credentials:'same-origin' }); } catch (e) {}
     showLogin();
+  });
+
+  window.addEventListener('storage', function(e){
+    if(e.key === LOCAL_STORE_KEY){ state.orders=null; state.stats=null; state.customers=null; state.reports=null; state.finances=null; if(state.view==='dashboard') loadDashboard(true); }
   });
 
   // ---------------- boot ----------------
