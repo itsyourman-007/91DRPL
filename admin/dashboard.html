@@ -796,6 +796,14 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   }
   async function api(path, opts){
     if(localMode) return localApi(path, opts);
+
+    opts = Object.assign({}, opts || {});
+    opts.headers = Object.assign({}, opts.headers || {});
+
+    var token = '';
+    try { token = sessionStorage.getItem('91dab-admin-token') || ''; } catch (e) {}
+    if (token) opts.headers.Authorization = 'Bearer ' + token;
+
     var res;
     try { res = await fetch(path, opts); }
     catch (e) { throw new Error('Could not reach the server — check your connection and try again.'); }
@@ -1431,22 +1439,6 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
 // ---------------- auth ----------------
 var loginScreen = document.getElementById('loginScreen');
 var app = document.getElementById('app');
-var ADMIN_TOKEN_KEY = '91dab-admin-token';
-
-function getAdminToken(){
-  try {
-    return sessionStorage.getItem(ADMIN_TOKEN_KEY) || '';
-  } catch(e) {
-    return '';
-  }
-}
-
-function setAdminToken(token){
-  try {
-    if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
-    else sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-  } catch(e) {}
-}
 
 function showLogin(){
   app.hidden = true;
@@ -1462,36 +1454,13 @@ function showApp(){
   app.hidden = false;
 }
 
-// Add the current session token to every protected API call.
-var baseApi = api;
-api = async function(path, opts){
-  opts = opts || {};
-  opts.headers = Object.assign({}, opts.headers || {});
-
-  var token = getAdminToken();
-  if (token) {
-    opts.headers.Authorization = 'Bearer ' + token;
-  }
-
-  try {
-    return await baseApi(path, opts);
-  } catch (e) {
-    if (e && e.message === 'Not authenticated') {
-      setAdminToken('');
-      showLogin();
-    }
-    throw e;
-  }
-};
-
 async function checkSession(){
   try {
-    var headers = {};
-    var token = getAdminToken();
+    var token = '';
+    try { token = sessionStorage.getItem('91dab-admin-token') || ''; } catch (e) {}
 
-    if (token) {
-      headers.Authorization = 'Bearer ' + token;
-    }
+    var headers = {};
+    if (token) headers.Authorization = 'Bearer ' + token;
 
     var res = await fetch('/api/admin/session', {
       method: 'GET',
@@ -1506,12 +1475,11 @@ async function checkSession(){
       startPolling();
       return;
     }
-
-    setAdminToken('');
   } catch (e) {
     console.error('Session check failed:', e);
   }
 
+  try { sessionStorage.removeItem('91dab-admin-token'); } catch (e) {}
   showLogin();
 }
 
@@ -1543,27 +1511,32 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
     });
 
     var data = {};
+
     try {
       data = await res.json();
     } catch (e) {}
 
     if (!res.ok) {
-      throw new Error(data.error || 'Invalid username or password');
+      throw new Error(
+        data.error || 'Invalid username or password'
+      );
     }
 
-    if (!data.token) {
-      throw new Error('Login succeeded but the server did not return a session token.');
+    // Server accepted the credentials and created the session.
+    if (data && data.token) {
+      try { sessionStorage.setItem('91dab-admin-token', data.token); } catch (e) {}
+    } else {
+      throw new Error('Login succeeded but no admin session token was returned.');
     }
 
-    setAdminToken(data.token);
     document.getElementById('loginPassword').value = '';
 
-    await checkSession();
+    window.location.replace('/admin');
+
   } catch (e) {
     console.error('Login error:', e);
     err.textContent = e.message;
     err.hidden = false;
-  } finally {
     btn.disabled = false;
     btn.textContent = 'Sign in';
   }
@@ -1572,7 +1545,6 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
 document.getElementById('logoutBtn').addEventListener('click', async function(){
   stopPolling();
   state.knownOrderCount = null;
-  setAdminToken('');
 
   try {
     await fetch('/admin/logout', {
@@ -1583,9 +1555,9 @@ document.getElementById('logoutBtn').addEventListener('click', async function(){
     console.error('Logout error:', e);
   }
 
+  try { sessionStorage.removeItem('91dab-admin-token'); } catch (e) {}
   showLogin();
 });
-
 // ---------------- boot ----------------
 checkSession();
 
