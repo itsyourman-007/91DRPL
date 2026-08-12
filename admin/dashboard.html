@@ -1429,63 +1429,165 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   function closeMobileSidebar(){ document.getElementById('sidebar').classList.remove('open'); }
 
   // ---------------- auth ----------------
-  var loginScreen = document.getElementById('loginScreen');
-  var app = document.getElementById('app');
-  function showLogin(){ app.hidden = true; loginScreen.hidden = false; document.getElementById('loginForm').hidden = false; document.getElementById('loginCheckingState').hidden = true; document.getElementById('loginPassword').value = ''; document.getElementById('loginUser').focus(); }
-  function showApp(){ loginScreen.hidden = true; app.hidden = false; }
-  function enableLocalMode(){ localMode = true; try { sessionStorage.setItem(LOCAL_SESSION_KEY,'1'); } catch(e) {} }
-  function hasLocalSession(){ try { return sessionStorage.getItem(LOCAL_SESSION_KEY)==='1'; } catch(e){ return false; } }
+  // ---------------- auth ----------------
+var loginScreen = document.getElementById('loginScreen');
+var app = document.getElementById('app');
 
-  async function checkSession(){
-    try {
-      var res = await fetch('/api/admin/session', {credentials:'same-origin'});
-      if (res.ok) { localMode=false; showApp(); loadDashboard(); startPolling(); return; }
-    } catch (e) {}
-    if (hasLocalSession()) { enableLocalMode(); showApp(); loadDashboard(); startPolling(); }
-    else showLogin();
+function showLogin(){
+  app.hidden = true;
+  loginScreen.hidden = false;
+  document.getElementById('loginForm').hidden = false;
+  document.getElementById('loginCheckingState').hidden = true;
+  document.getElementById('loginPassword').value = '';
+  document.getElementById('loginUser').focus();
+}
+
+function showApp(){
+  loginScreen.hidden = true;
+  app.hidden = false;
+}
+
+function enableLocalMode(){
+  localMode = true;
+  try {
+    sessionStorage.setItem(LOCAL_SESSION_KEY, '1');
+  } catch(e) {}
+}
+
+function hasLocalSession(){
+  try {
+    return sessionStorage.getItem(LOCAL_SESSION_KEY) === '1';
+  } catch(e){
+    return false;
   }
-  document.getElementById('loginForm').addEventListener('submit', async function(e){
-    e.preventDefault();
-    var btn = document.getElementById('loginSubmit');
-    var err = document.getElementById('loginError');
-    err.hidden = true;
-    var user = document.getElementById('loginUser').value.trim();
-    var pass = document.getElementById('loginPassword').value;
-    btn.disabled = true; btn.textContent = 'Signing in…';
-    try {
-      var serverWorked = false;
-      try {
-        var res = await fetch('/admin/login', { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ user:user, password:pass }) });
-        var data = {}; try { data = await res.json(); } catch(e2) {}
-        if (res.ok) serverWorked = true;
-        else if (res.status !== 404 && res.status !== 405) throw new Error(data.error || 'Invalid username or password');
-      } catch (serverErr) {
-        if (serverErr && serverErr.message === 'Invalid username or password') throw serverErr;
-      }
-      if (!serverWorked) {
-        if (location.protocol !== 'file:' && !(location.hostname==='localhost'||location.hostname==='127.0.0.1')) throw new Error('The admin login server is unavailable. Start the store backend or open the site through its web server.');
-        if (user !== LOCAL_ADMIN_USER || pass !== LOCAL_ADMIN_PASSWORD) throw new Error('Invalid username or password. Standalone dashboard credentials are admin / admin123.');
-        enableLocalMode();
-      } else { localMode=false; try{ sessionStorage.removeItem(LOCAL_SESSION_KEY); }catch(e){} }
-      document.getElementById('loginPassword').value = '';
-      showApp(); await loadDashboard(true); startPolling();
-    } catch (e3) { err.textContent = e3.message; err.hidden = false; }
-    finally { btn.disabled = false; btn.textContent = 'Sign in'; }
-  });
-  document.getElementById('logoutBtn').addEventListener('click', async function(){
-    stopPolling(); state.knownOrderCount = null;
-    if(localMode) { try{sessionStorage.removeItem(LOCAL_SESSION_KEY);}catch(e){} showLogin(); return; }
-    try { await fetch('/admin/logout', { method:'POST', credentials:'same-origin' }); } catch (e) {}
+}
+
+async function checkSession(){
+  try {
+    var res = await fetch('/api/admin/session', {
+      credentials: 'same-origin'
+    });
+
+    if (res.ok) {
+      localMode = false;
+      showApp();
+      await loadDashboard(true);
+      startPolling();
+      return;
+    }
+  } catch (e) {
+    console.error('Session check failed:', e);
+  }
+
+  if (hasLocalSession()) {
+    enableLocalMode();
+    showApp();
+    await loadDashboard(true);
+    startPolling();
+  } else {
     showLogin();
-  });
+  }
+}
 
-  window.addEventListener('storage', function(e){
-    if(e.key === LOCAL_STORE_KEY){ state.orders=null; state.stats=null; state.customers=null; state.reports=null; state.finances=null; if(state.view==='dashboard') loadDashboard(true); }
-  });
+document.getElementById('loginForm').addEventListener('submit', async function(e){
+  e.preventDefault();
 
-  // ---------------- boot ----------------
-  checkSession();
-})();
+  var btn = document.getElementById('loginSubmit');
+  var err = document.getElementById('loginError');
+
+  err.hidden = true;
+
+  var user = document.getElementById('loginUser').value.trim();
+  var pass = document.getElementById('loginPassword').value;
+
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+
+  try {
+    var res = await fetch('/admin/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        user: user,
+        password: pass
+      })
+    });
+
+    var data = {};
+
+    try {
+      data = await res.json();
+    } catch (e) {}
+
+    if (!res.ok) {
+      throw new Error(
+        data.error || 'Invalid username or password'
+      );
+    }
+
+    // Login succeeded. The server has created admin_session.
+    document.getElementById('loginPassword').value = '';
+
+    // Reload the admin page so the newly-created session cookie
+    // is checked by checkSession() on a fresh page load.
+    window.location.href = '/admin';
+    return;
+
+  } catch (e3) {
+    console.error('Admin login error:', e3);
+    err.textContent = e3.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async function(){
+  stopPolling();
+  state.knownOrderCount = null;
+
+  if(localMode) {
+    try {
+      sessionStorage.removeItem(LOCAL_SESSION_KEY);
+    } catch(e) {}
+
+    showLogin();
+    return;
+  }
+
+  try {
+    await fetch('/admin/logout', {
+      method: 'POST',
+      credentials: 'same-origin'
+    });
+  } catch (e) {
+    console.error('Logout error:', e);
+  }
+
+  showLogin();
+});
+
+window.addEventListener('storage', function(e){
+  if(e.key === LOCAL_STORE_KEY){
+    state.orders = null;
+    state.stats = null;
+    state.customers = null;
+    state.reports = null;
+    state.finances = null;
+
+    if(state.view === 'dashboard'){
+      loadDashboard(true);
+    }
+  }
+});
+
+// ---------------- boot ----------------
+checkSession();
+   })();
 </script>
 </body>
 </html>
