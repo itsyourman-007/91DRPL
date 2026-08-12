@@ -38,42 +38,82 @@ const MERCHANT_NAME = process.env.MERCHANT_NAME || '91DAB';
 // =================================================================
 
 // POST /api/orders — create a fresh order + a 5-minute UPI QR for it.
-// Amount is computed here from qty, never trusted from the client.
+// Amount is computed here from qty + selected subscription plan.
 app.post('/api/orders', async (req, res) => {
   try {
-    const { qty, orderInfo } = req.body || {};
+    const { qty, planKey, orderInfo } = req.body || {};
 
     if (!Number.isInteger(qty) || qty < 1) {
       return res.status(400).json({ error: 'Invalid quantity' });
     }
-    if (!orderInfo?.name || !orderInfo?.email || !orderInfo?.phone || !orderInfo?.address) {
+
+    if (
+      !orderInfo?.name ||
+      !orderInfo?.email ||
+      !orderInfo?.phone ||
+      !orderInfo?.address
+    ) {
       return res.status(400).json({ error: 'Missing delivery details' });
     }
+
     if (!MERCHANT_VPA) {
-      return res.status(500).json({ error: 'MERCHANT_VPA is not configured on the server' });
+      return res.status(500).json({
+        error: 'MERCHANT_VPA is not configured on the server'
+      });
     }
 
-    const amount = qty * PRICE_PER_PACK;
-    const order = await createOrder({ qty, amount, orderInfo });
+    // Server-side prices for each plan.
+    const PLAN_PRICES = {
+      introductory: 500,
+      monthly: 3000,
+      yearly: 30000,
+    };
 
+    // Use the selected plan sent by shop.html.
+    const selectedPlan = planKey || 'introductory';
+
+    if (!Object.prototype.hasOwnProperty.call(PLAN_PRICES, selectedPlan)) {
+      return res.status(400).json({
+        error: 'Invalid subscription plan'
+      });
+    }
+
+    // Calculate the real amount on the server.
+    const unitPrice = PLAN_PRICES[selectedPlan];
+    const amount = qty * unitPrice;
+
+    // Create the order with the correct amount.
+    const order = await createOrder({
+      qty,
+      amount,
+      orderInfo,
+    });
+
+    // Build UPI payment link using the correct amount.
     const upiLink = buildUpiLink({
       vpa: MERCHANT_VPA,
       payeeName: MERCHANT_NAME,
       amount,
       orderId: order.id,
     });
+
+    // Generate QR code.
     const qrDataUrl = await buildQrDataUrl(upiLink);
 
     res.json({
       orderId: order.id,
       amount,
+      planKey: selectedPlan,
+      unitPrice,
       upiLink,
       qrDataUrl,
       expiresAt: order.expiresAt,
     });
   } catch (err) {
     console.error('create-order error:', err);
-    res.status(500).json({ error: 'Could not create order' });
+    res.status(500).json({
+      error: 'Could not create order'
+    });
   }
 });
 
@@ -81,11 +121,20 @@ app.post('/api/orders', async (req, res) => {
 app.get('/api/orders/:id/status', async (req, res) => {
   try {
     const order = await getOrder(req.params.id);
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    res.json({ status: order.status, expiresAt: order.expiresAt });
+
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    res.json({
+      status: order.status,
+      expiresAt: order.expiresAt
+    });
   } catch (err) {
     console.error('order-status error:', err);
-    res.status(500).json({ error: 'Could not load order' });
+    res.status(500).json({
+      error: 'Could not load order'
+    });
   }
 });
 
@@ -94,12 +143,23 @@ app.get('/api/orders/:id/status', async (req, res) => {
 // bank/UPI app instead of matching on amount + timing alone.
 app.post('/api/orders/:id/utr', async (req, res) => {
   try {
-    const order = await setUtr(req.params.id, req.body?.utr || '');
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    const order = await setUtr(
+      req.params.id,
+      req.body?.utr || ''
+    );
+
+    if (!order) {
+      return res.status(404).json({
+        error: 'Order not found'
+      });
+    }
+
     res.json({ ok: true });
   } catch (err) {
     console.error('set-utr error:', err);
-    res.status(500).json({ error: 'Could not save reference number' });
+    res.status(500).json({
+      error: 'Could not save reference number'
+    });
   }
 });
 
