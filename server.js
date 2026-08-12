@@ -180,123 +180,239 @@ app.post('/api/orders/:id/utr', async (req, res) => {
 // GET /api/admin/session on load to find out which state to show.
 // =================================================================
 
+// =================================================================
+// Admin authentication
+// =================================================================
+
 const SESSION_COOKIE = 'admin_session';
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 function sessionSecret() {
   const secret = process.env.ADMIN_PASSWORD;
-  if (!secret) throw new Error('ADMIN_PASSWORD is not set — admin login is disabled until it is.');
+
+  if (!secret) {
+    throw new Error(
+      'ADMIN_PASSWORD is not set — admin login is disabled.'
+    );
+  }
+
   return secret;
 }
 
-function signPayload(b64) {
-  return crypto.createHmac('sha256', sessionSecret()).update(b64).digest('base64url');
+function signPayload(payload) {
+  return crypto
+    .createHmac('sha256', sessionSecret())
+    .update(payload)
+    .digest('base64url');
 }
 
 function createSessionToken() {
-  const b64 = Buffer.from(JSON.stringify({ exp: Date.now() + SESSION_MAX_AGE_MS })).toString('base64url');
-  return `${b64}.${signPayload(b64)}`;
+  const payload = Buffer
+    .from(JSON.stringify({
+      exp: Date.now() + SESSION_MAX_AGE_MS
+    }))
+    .toString('base64url');
+
+  const signature = signPayload(payload);
+
+  return `${payload}.${signature}`;
 }
 
 function verifySessionToken(token) {
-  if (!token || typeof token !== 'string' || !token.includes('.')) return false;
-  const [b64, sig] = token.split('.');
-  let expectedSig;
-  try {
-    expectedSig = signPayload(b64);
-  } catch {
-    return false; // ADMIN_PASSWORD not configured
+  if (
+    !token ||
+    typeof token !== 'string'
+  ) {
+    return false;
   }
-  const sigBuf = Buffer.from(sig);
-  const expBuf = Buffer.from(expectedSig);
-  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return false;
+
+  const parts = token.split('.');
+
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const payload = parts[0];
+  const signature = parts[1];
+
+  let expectedSignature;
+
   try {
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    return typeof payload.exp === 'number' && payload.exp > Date.now();
-  } catch {
+    expectedSignature = signPayload(payload);
+  } catch (err) {
+    return false;
+  }
+
+  const sigA = Buffer.from(signature);
+  const sigB = Buffer.from(expectedSignature);
+
+  if (
+    sigA.length !== sigB.length ||
+    !crypto.timingSafeEqual(sigA, sigB)
+  ) {
+    return false;
+  }
+
+  try {
+    const data = JSON.parse(
+      Buffer.from(payload, 'base64url').toString('utf8')
+    );
+
+    return (
+      typeof data.exp === 'number' &&
+      data.exp > Date.now()
+    );
+  } catch (err) {
     return false;
   }
 }
 
 function parseCookies(req) {
-  const header = req.headers.cookie;
+  const header = req.headers.cookie || '';
   const cookies = {};
-  if (!header) return cookies;
+
   header.split(';').forEach((part) => {
-    const i = part.indexOf('=');
-    if (i === -1) return;
-    cookies[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    const index = part.indexOf('=');
+
+    if (index === -1) {
+      return;
+    }
+
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+
+    cookies[key] = value;
   });
+
   return cookies;
 }
 
-function setSessionCookie(req, res, token) {
-  const attrs = [
+function setSessionCookie(res, token) {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  const cookieParts = [
     `${SESSION_COOKIE}=${token}`,
     'HttpOnly',
     'Path=/',
     `Max-Age=${Math.floor(SESSION_MAX_AGE_MS / 1000)}`,
-    'SameSite=Lax',
+    'SameSite=Lax'
   ];
-  if (req.secure) attrs.push('Secure');
-  res.setHeader('Set-Cookie', attrs.join('; '));
+
+  // Render/production runs over HTTPS.
+  if (isProduction) {
+    cookieParts.push('Secure');
+  }
+
+  res.setHeader(
+    'Set-Cookie',
+    cookieParts.join('; ')
+  );
 }
 
-function clearSessionCookie(req, res) {
-  const attrs = [`${SESSION_COOKIE}=`, 'HttpOnly', 'Path=/', 'Max-Age=0', 'SameSite=Lax'];
-  if (req.secure) attrs.push('Secure');
-  res.setHeader('Set-Cookie', attrs.join('; '));
+function clearSessionCookie(res) {
+  const cookieParts = [
+    `${SESSION_COOKIE}=`,
+    'HttpOnly',
+    'Path=/',
+    'Max-Age=0',
+    'SameSite=Lax'
+  ];
+
+  if (process.env.NODE_ENV === 'production') {
+    cookieParts.push('Secure');
+  }
+
+  res.setHeader(
+    'Set-Cookie',
+    cookieParts.join('; ')
+  );
 }
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
   const bufB = Buffer.from(String(b ?? ''));
-  if (bufA.length !== bufB.length) return false;
+
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
 function requireAdmin(req, res, next) {
-  if (verifySessionToken(parseCookies(req)[SESSION_COOKIE])) return next();
-  return res.status(401).json({ error: 'Not authenticated' });
+  const cookies = parseCookies(req);
+  const token = cookies[SESSION_COOKIE];
+
+  if (verifySessionToken(token)) {
+    return next();
+  }
+
+  return res.status(401).json({
+    error: 'Not authenticated'
+  });
 }
 
-// GET /admin — the dashboard shell. Served to everyone; it carries no
-// data of its own, and its own JS shows the login screen or the
-// dashboard depending on GET /api/admin/session below.
+// GET /admin — dashboard shell
 app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin', 'dashboard.html'));
+  res.sendFile(
+    path.join(__dirname, 'admin', 'dashboard.html')
+  );
 });
 
-// GET /api/admin/session — lets the dashboard's boot JS check "am I
-// logged in?" without pulling real data.
+// GET /api/admin/session — verify current admin session
 app.get('/api/admin/session', requireAdmin, (req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true
+  });
 });
 
-// POST /admin/login — { user, password } → sets the session cookie.
+// POST /admin/login
 app.post('/admin/login', (req, res) => {
-  if (!process.env.ADMIN_USER || !process.env.ADMIN_PASSWORD) {
-    return res.status(500).json({ error: 'Admin login is not configured on the server yet.' });
+  try {
+    const adminUser = process.env.ADMIN_USER;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (!adminUser || !adminPassword) {
+      return res.status(500).json({
+        error: 'Admin login is not configured on the server.'
+      });
+    }
+
+    const { user, password } = req.body || {};
+
+    if (
+      safeEqual(user, adminUser) &&
+      safeEqual(password, adminPassword)
+    ) {
+      const token = createSessionToken();
+
+      setSessionCookie(res, token);
+
+      return res.json({
+        ok: true
+      });
+    }
+
+    return res.status(401).json({
+      error: 'Invalid username or password'
+    });
+
+  } catch (err) {
+    console.error('admin-login error:', err);
+
+    return res.status(500).json({
+      error: 'Could not complete admin login'
+    });
   }
-  const { user, password } = req.body || {};
-  if (safeEqual(user, process.env.ADMIN_USER) && safeEqual(password, process.env.ADMIN_PASSWORD)) {
-    setSessionCookie(req, res, createSessionToken());
-    return res.json({ ok: true });
-  }
-  return res.status(401).json({ error: 'Invalid username or password' });
 });
 
-// POST /admin/logout — clears the session cookie.
-//
-// Note: this is a stateless signed token, not a server-side session, so
-// logout only clears the cookie in the browser that calls it — the token
-// itself isn't revoked and would still verify if replayed before it
-// naturally expires (12h). That's an acceptable tradeoff for a single
-// shared admin password with no session database; if that ever stops
-// being true, add a `revoked_at` check against a small sessions table.
+// POST /admin/logout
 app.post('/admin/logout', (req, res) => {
-  clearSessionCookie(req, res);
-  res.json({ ok: true });
+  clearSessionCookie(res);
+
+  res.json({
+    ok: true
+  });
 });
 
 // ---- Dashboard / Orders / Customers ----
