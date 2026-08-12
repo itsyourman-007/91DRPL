@@ -1428,8 +1428,7 @@ textarea.msg-field { min-height: 110px; resize: vertical; }
   document.getElementById('menuBtn').addEventListener('click', function(){ document.getElementById('sidebar').classList.add('open'); });
   function closeMobileSidebar(){ document.getElementById('sidebar').classList.remove('open'); }
 
-  // ---------------- auth ----------------
-  // ---------------- auth ----------------
+// ---------------- auth ----------------
 var loginScreen = document.getElementById('loginScreen');
 var app = document.getElementById('app');
 
@@ -1447,29 +1446,15 @@ function showApp(){
   app.hidden = false;
 }
 
-function enableLocalMode(){
-  localMode = true;
-  try {
-    sessionStorage.setItem(LOCAL_SESSION_KEY, '1');
-  } catch(e) {}
-}
-
-function hasLocalSession(){
-  try {
-    return sessionStorage.getItem(LOCAL_SESSION_KEY) === '1';
-  } catch(e){
-    return false;
-  }
-}
-
 async function checkSession(){
   try {
     var res = await fetch('/api/admin/session', {
-      credentials: 'same-origin'
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store'
     });
 
     if (res.ok) {
-      localMode = false;
       showApp();
       await loadDashboard(true);
       startPolling();
@@ -1479,14 +1464,7 @@ async function checkSession(){
     console.error('Session check failed:', e);
   }
 
-  if (hasLocalSession()) {
-    enableLocalMode();
-    showApp();
-    await loadDashboard(true);
-    startPolling();
-  } else {
-    showLogin();
-  }
+  showLogin();
 }
 
 document.getElementById('loginForm').addEventListener('submit', async function(e){
@@ -1528,19 +1506,16 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       );
     }
 
-    // Login succeeded. The server has created admin_session.
+    // Server accepted the credentials and created the session cookie.
     document.getElementById('loginPassword').value = '';
 
-    // Reload the admin page so the newly-created session cookie
-    // is checked by checkSession() on a fresh page load.
-    window.location.href = '/admin';
-    return;
+    // Reload so the new cookie is used by checkSession().
+    window.location.replace('/admin');
 
-  } catch (e3) {
-    console.error('Admin login error:', e3);
-    err.textContent = e3.message;
+  } catch (e) {
+    console.error('Login error:', e);
+    err.textContent = e.message;
     err.hidden = false;
-  } finally {
     btn.disabled = false;
     btn.textContent = 'Sign in';
   }
@@ -1549,15 +1524,6 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
 document.getElementById('logoutBtn').addEventListener('click', async function(){
   stopPolling();
   state.knownOrderCount = null;
-
-  if(localMode) {
-    try {
-      sessionStorage.removeItem(LOCAL_SESSION_KEY);
-    } catch(e) {}
-
-    showLogin();
-    return;
-  }
 
   try {
     await fetch('/admin/logout', {
@@ -1571,23 +1537,8 @@ document.getElementById('logoutBtn').addEventListener('click', async function(){
   showLogin();
 });
 
-window.addEventListener('storage', function(e){
-  if(e.key === LOCAL_STORE_KEY){
-    state.orders = null;
-    state.stats = null;
-    state.customers = null;
-    state.reports = null;
-    state.finances = null;
-
-    if(state.view === 'dashboard'){
-      loadDashboard(true);
-    }
-  }
-});
-
 // ---------------- boot ----------------
 checkSession();
-   })();
 </script>
 </body>
 </html>
